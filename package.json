@@ -1,0 +1,134 @@
+{
+  "name": "pchat",
+  "displayName": "PChat (Persistent Chat)",
+  "publisher": "local",
+  "description": "Cursor Agent 通过 MCP 在侧栏持久等待用户回复。",
+  "version": "1.0.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pchatContainer",
+          "title": "PChat",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "pchatContainer": [
+        {
+          "type": "webview",
+          "id": "pchat.sidePanel",
+          "name": "PChat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "pchat.openPanel",
+        "title": "打开 PChat 面板",
+        "category": "PChat"
+      },
+      {
+        "command": "pchat.refFile",
+        "title": "引用当前文件",
+        "category": "PChat"
+      },
+      {
+        "command": "pchat.refSelection",
+        "title": "引用选中代码",
+        "category": "PChat"
+      },
+      {
+        "command": "pchat.refExplorerFile",
+        "title": "引用到 PChat",
+        "category": "PChat"
+      },
+      {
+        "command": "pchat.copyMcpConfig",
+        "title": "复制 MCP 配置（bridge.js）到剪贴板",
+        "category": "PChat"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "pchat.refFile",
+          "group": "pchat@1",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "pchat.refSelection",
+          "group": "pchat@2",
+          "when": "editorTextFocus && editorHasSelection"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "pchat.refExplorerFile",
+          "group": "pchat@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "pchat.refFile",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "pchat.refSelection",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus && editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "PChat",
+      "properties": {
+        "pchat.disableAutoMcp": {
+          "type": "boolean",
+          "default": false,
+          "description": "为 true 时，不在激活时自动向 ~/.cursor/mcp.json 合并 mcpServers.pchat"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:webview && node scripts/build-node.mjs",
+    "build:webview": "vite build --config webview/vite.config.ts",
+    "watch": "concurrently -k \"vite build --config webview/vite.config.ts --watch\" \"node scripts/build-node.mjs --watch\"",
+    "package": "vsce package --no-dependencies --allow-missing-repository --allow-package-all-secrets --allow-package-env-file",
+    "check": "tsc -p tsconfig.extension.json --noEmit && tsc -p webview/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.8.2",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.2",
+    "boxicons": "^2.1.4",
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.20.2",
+    "highlight.js": "^11.9.0",
+    "marked": "^12.0.0",
+    "preact": "^10.22.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}

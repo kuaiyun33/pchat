@@ -1,0 +1,21 @@
+/**
+ * 侧栏视觉：偏 Tokyo Night / 深海军蓝，与参考图一致（非 VS Code 默认灰）。
+ */
+:root {
+  --pchat-bg: #16161e;
+  --pchat-surface: #1a1b26;
+  --pchat-surface-2: #24283b;
+  --pchat-surface-elevated: #292e42;
+  --pchat-border: #2f3549;
+  --pchat-text: #c0caf5;
+  --pchat-muted: #565f89;
+  --pchat-accent: #7aa2f7;
+  --pchat-accent-dim: #89b4fa;
+  --pchat-success: #9ece6a;
+  --pchat-warning: #e0af68;
+  --pchat-danger: #f7768e;
+  --pchat-radius: 8px;
+  --pchat-font: var(--vscode-font-family, 'SF Pro Text', system-ui, sans-serif);
+  --pchat-font-mono: var(--vscode-editor-font-family, 'JetBrains Mono', ui-monospace, monospace);
+  --pchat-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}

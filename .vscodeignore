@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test/**
+.git/**
+src/**
+webview/**
+scripts/**
+tsconfig*.json
+*.map
+node_modules/**
+.pchat-port
+.gitignore
+*.command
