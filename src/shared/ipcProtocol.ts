@@ -28,7 +28,8 @@ export type IpcMessage =
   | { readonly type: 'bridgeHello'; readonly payload: BridgeHelloPayload }
   | { readonly type: 'waitRequest'; readonly payload: WaitRequestPayload }
   | { readonly type: 'waitResult'; readonly payload: WaitResultPayload }
-  | { readonly type: 'ping' };
+  | { readonly type: 'ping' }
+  | { readonly type: 'pong' };
 
 export function encodeIpcMessage(msg: IpcMessage): Buffer {
   const body = Buffer.from(JSON.stringify(msg), 'utf8');

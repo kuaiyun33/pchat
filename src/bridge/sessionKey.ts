@@ -16,7 +16,8 @@ export function parseWaitSessionId(raw: unknown, message?: string): ParseSession
   if (!s || s === 'NEW' || s.toLowerCase() === 'new') {
     let generated: string;
     if (message && message.trim()) {
-      generated = createHash('md5').update(message.trim()).digest('hex').substring(0, 8);
+      // 混入 process.pid：同进程重试幂等；不同窗口（进程）即使消息相同也不会碰撞
+      generated = createHash('md5').update(`${process.pid}:${message.trim()}`).digest('hex').substring(0, 8);
     } else {
       generated = randomBytes(4).toString('hex');
     }

@@ -4,6 +4,7 @@
 
 import * as vscode from 'vscode';
 import { ensurePchatMcpInCursorConfig } from './cursorMcpInstall.js';
+import { ensurePchatRules } from './cursorRules.js';
 import { PchatCoordinator } from './coordinator.js';
 import { PchatIpcServer } from './ipcServer.js';
 import { PchatSidePanelProvider } from './panel.js';
@@ -29,7 +30,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const coordinator = new PchatCoordinator(
     context,
     (m) => {
-      void sideView?.webview.postMessage(m);
+      try {
+        void sideView?.webview.postMessage(m);
+      } catch {
+        /* webview 可能已 dispose，忽略——恢复后会自动 pushFullState */
+      }
     },
     ipc,
   );
@@ -41,16 +46,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     console.error('[pchat] ensurePchatMcpInCursorConfig', err);
   });
 
+  void ensurePchatRules(false).then(res => {
+    coordinator.setRulesStatus(res);
+  }).catch((err: any) => {
+    console.error('[pchat] ensurePchatRules', err);
+    coordinator.setRulesStatus({ status: 'error', message: err?.message || String(err), timestamp: Date.now() });
+  });
+
   const provider = new PchatSidePanelProvider(context.extensionUri, coordinator, (v) => {
     sideView = v;
+    /* webview 重新可用时立即推送完整状态，确保断开后能恢复 */
+    if (v) {
+      coordinator.pushFullState();
+    }
   });
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(PchatSidePanelProvider.viewId, provider),
+    vscode.window.registerWebviewViewProvider(PchatSidePanelProvider.viewId, provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     { dispose: () => void ipc.dispose() },
     vscode.workspace.onDidCreateFiles(() => provider.invalidateFileIndex()),
     vscode.workspace.onDidDeleteFiles(() => provider.invalidateFileIndex()),
     vscode.workspace.onDidRenameFiles(() => provider.invalidateFileIndex()),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pchat.rewriteRules', async () => {
+      try {
+        const res = await ensurePchatRules(true);
+        coordinator.setRulesStatus(res);
+      } catch (e: any) {
+        coordinator.setRulesStatus({ status: 'error', message: e?.message || String(e), timestamp: Date.now() });
+      }
+    }),
   );
 
   context.subscriptions.push(

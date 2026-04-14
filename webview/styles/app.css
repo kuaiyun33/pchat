@@ -56,13 +56,13 @@ body {
 /* 收起态首字符头像 */
 .pchat-mini-avatar {
   position: relative;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: none;
   background: var(--pchat-surface-2);
   color: var(--pchat-text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
@@ -71,6 +71,13 @@ body {
   flex-shrink: 0;
   transition: background 0.15s, box-shadow 0.15s;
   padding: 0;
+  letter-spacing: 0.5px;
+}
+
+/* 只有1个字时放大字号 */
+.pchat-mini-avatar.single-char {
+  font-size: 14px;
+  letter-spacing: 0;
 }
 
 .pchat-mini-avatar:hover {
@@ -168,7 +175,7 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
 }
 
@@ -283,12 +290,62 @@ body {
   outline-offset: 2px;
 }
 
+/* 消息区域容器（放置浮动按钮的锚点） */
+.pchat-msgs-wrap {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .pchat-msgs {
   flex: 1;
   overflow: auto;
   padding: 6px 8px;
   min-height: 0;
   background: var(--pchat-bg);
+}
+
+/* 滚动到底部浮动按钮 */
+.pchat-scroll-bottom-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--pchat-border);
+  border-radius: 50%;
+  background: var(--pchat-surface-elevated, var(--pchat-surface-2));
+  color: var(--pchat-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  opacity: 0.85;
+  transition: opacity 0.2s, transform 0.2s, background 0.15s;
+  z-index: 10;
+  animation: pchat-scroll-btn-in 0.2s ease-out;
+}
+
+.pchat-scroll-bottom-btn:hover {
+  opacity: 1;
+  background: var(--pchat-accent);
+  color: #1a1b26;
+  transform: scale(1.1);
+}
+
+@keyframes pchat-scroll-btn-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.8);
+  }
+  to {
+    opacity: 0.85;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .pchat-empty {
@@ -420,6 +477,34 @@ body {
   transform: scale(1.02);
 }
 
+/* 长消息折叠 */
+.pchat-bubble-body--collapsed {
+  max-height: 300px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+.pchat-bubble-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 4px 0 2px;
+  margin-top: 2px;
+  border: none;
+  background: transparent;
+  color: var(--pchat-accent);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+
+.pchat-bubble-toggle:hover {
+  opacity: 1;
+}
+
 .pchat-image-lightbox {
   position: fixed;
   top: 0;
@@ -539,8 +624,8 @@ body {
   bottom: 100%;
   left: 0;
   margin-bottom: 8px;
-  width: 280px;
-  max-height: 320px;
+  width: 460px;
+  max-height: 400px;
   background: var(--pchat-surface-elevated, var(--pchat-surface-2));
   border: 1px solid var(--pchat-border);
   border-radius: var(--pchat-radius);
@@ -1451,4 +1536,375 @@ body {
 .pchat-load-all-btn:hover {
   color: var(--pchat-accent);
   background: color-mix(in srgb, var(--pchat-accent) 12%, transparent);
+}
+
+/* Usage Drawer Styles */
+.pchat-usage-drawer-overlay {
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  backdrop-filter: blur(2px);
+}
+
+.pchat-usage-drawer {
+  background: var(--pchat-bg);
+  border-left: 1px solid var(--pchat-border);
+  border-radius: 0;
+  width: 80%;
+  max-width: none;
+  max-height: none;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: pchat-drawer-slide-in 0.2s ease-out;
+}
+
+@keyframes pchat-drawer-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.pchat-usage-drawer-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--pchat-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--pchat-surface);
+}
+
+.pchat-usage-drawer-header h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--pchat-text);
+  font-weight: 600;
+}
+
+.pchat-usage-drawer-body {
+  padding: 12px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.pchat-usage-section {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--pchat-border);
+}
+
+.pchat-usage-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.pchat-usage-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  color: var(--pchat-muted);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.pchat-usage-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.pchat-usage-row span:first-child {
+  color: var(--pchat-muted);
+}
+.pchat-usage-row span:last-child {
+  color: var(--pchat-text);
+  font-weight: 500;
+}
+
+.pchat-usage-desc {
+  font-size: 10px;
+  color: var(--pchat-muted);
+  line-height: 1.4;
+}
+.pchat-usage-desc code {
+  background: var(--pchat-surface-2);
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--pchat-accent);
+}
+
+.pchat-session-input {
+  background: var(--pchat-surface);
+  border: 1px solid var(--pchat-border);
+  color: var(--pchat-text);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.pchat-session-input:focus {
+  outline: 1px solid var(--pchat-accent);
+  border-color: transparent;
+}
+
+.pchat-usage-fetch-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  background: var(--pchat-accent);
+  color: #1a1b26;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.pchat-usage-progressbar {
+  height: 8px;
+  background: var(--pchat-surface-2);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 6px;
+  position: relative;
+}
+
+.pchat-usage-progress-fill {
+  height: 100%;
+  background: var(--pchat-accent);
+  transition: width 0.3s ease;
+}
+
+.pchat-usage-model-item {
+  background: var(--pchat-surface);
+  border: 1px solid var(--pchat-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+  position: relative;
+}
+
+.pchat-usage-model-name {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--pchat-text);
+}
+
+.pchat-usage-model-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 10px;
+  color: var(--pchat-muted);
+}
+
+.pchat-usage-model-stats span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pchat-usage-model-cost {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-weight: 600;
+  color: var(--vscode-charts-green);
+  font-size: 11px;
+}
+
+/* 快捷指令拖拽排序样式 */
+.pchat-cmd-item {
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), background-color 0.2s, min-height 0.2s;
+}
+.pchat-cmd-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  margin-right: 6px;
+  margin-left: -4px;
+  color: var(--pchat-text-muted);
+  font-size: 14px;
+  cursor: grab;
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+.pchat-cmd-item:hover .pchat-cmd-drag-handle {
+  opacity: 0.8;
+}
+.pchat-cmd-drag-handle:active {
+  cursor: grabbing;
+}
+.pchat-cmd-item-dragging {
+  opacity: 0.5;
+  background: var(--pchat-surface-3);
+}
+.pchat-cmd-item-dragover {
+  border-top: 2px solid var(--pchat-primary, #007aff);
+}
+
+/* Bridge 断开时的泛红提示 */
+.pchat-root--bridge-disconnected .pchat-main {
+  box-shadow: inset 0 0 0 2px rgba(255, 59, 48, 0.5), inset 0 0 60px rgba(255, 59, 48, 0.1);
+  background-color: rgba(255, 59, 48, 0.02);
+  transition: box-shadow 0.3s ease, background-color 0.3s ease;
+}
+
+.pchat-root--bridge-disconnected .pchat-sidebar {
+  border-right-color: rgba(255, 59, 48, 0.3);
+}
+
+.pchat-root--bridge-disconnected .pchat-header {
+  border-bottom-color: rgba(255, 59, 48, 0.3);
+  background: linear-gradient(to bottom, rgba(255, 59, 48, 0.05), transparent);
+}
+
+.pchat-cmd-item-drop-top {
+  border-top: 2px solid var(--pchat-primary, #007aff);
+}
+.pchat-cmd-item-drop-bottom {
+  border-bottom: 2px solid var(--pchat-primary, #007aff);
+}
+
+/* Custom progress bar styles to match the precise screenshot layout */
+.pchat-usage-cost-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--vscode-editor-background, transparent);
+  border-radius: 8px;
+  padding: 8px 4px;
+}
+
+.pchat-usage-cost-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  line-height: 1.2;
+}
+
+.pchat-usage-cost-row.total-row {
+  margin-bottom: 12px;
+}
+
+.pchat-cost-label {
+  width: 66px;
+  color: var(--vscode-foreground);
+  flex-shrink: 0;
+}
+
+.pchat-usage-cost-details {
+  display: flex;
+  align-items: flex-start;
+}
+
+.pchat-cost-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.pchat-cost-progress-bar {
+  flex: 1;
+  min-width: 100px;
+  max-width: 140px;
+  background-color: var(--vscode-editorWidget-background, #f0f0f0);
+  border-radius: 4px;
+  overflow: hidden;
+  height: 10px;
+}
+
+.pchat-cost-progress-bar.small {
+  height: 6px;
+}
+
+.pchat-cost-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.pchat-cost-progress-fill.red {
+  background-color: #f56c6c; /* Equivalent to El-ui danger/red */
+}
+
+.pchat-cost-progress-fill.green {
+  background-color: #67c23a; /* Equivalent to El-ui success/green */
+}
+
+.pchat-cost-progress-fill.blue {
+  background-color: #409eff; /* Fallback for lower rankings */
+}
+
+.pchat-cost-amount {
+  width: 60px;
+  color: var(--vscode-foreground);
+  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+  text-align: left;
+}
+
+.pchat-cost-model {
+  flex: 1;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 恢复会话入口 ── */
+.pchat-sidebar-restore {
+  flex-shrink: 0;
+  border-top: 1px solid var(--pchat-border);
+  padding: 6px 8px;
+}
+
+.pchat-restore-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--pchat-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.pchat-restore-btn:hover {
+  color: var(--pchat-accent);
+}
+
+.pchat-restore-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pchat-restore-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--pchat-accent);
+  background: var(--pchat-bg);
+  color: var(--pchat-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.pchat-restore-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--pchat-accent);
+}
+
+.pchat-restore-input::placeholder {
+  color: var(--pchat-muted);
+  opacity: 0.6;
 }

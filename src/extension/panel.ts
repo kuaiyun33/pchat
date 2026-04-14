@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { PchatCoordinator } from './coordinator.js';
+import { ensurePchatRules } from './cursorRules.js';
 import type { FromWebviewMessage, ToWebviewMessage, WorkspaceFileItem } from './webviewProtocol.js';
 
 /** 工作区文件列表缓存，降低 `findFiles` 频率。 */
@@ -150,6 +151,11 @@ export class PchatSidePanelProvider implements vscode.WebviewViewProvider {
         this.post(webview, { type: 'submit:ack', payload: { ok } });
         break;
       }
+      case 'submit:broadcast_selected': {
+        this.coordinator.broadcastSelectedUserText(msg.sessionIds, msg.text);
+        this.post(webview, { type: 'submit:ack', payload: { ok: true } });
+        break;
+      }
       case 'settings':
         this.coordinator.updateSettings(msg.settings);
         break;
@@ -207,6 +213,43 @@ export class PchatSidePanelProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'session:restore': {
+        const sid = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+        if (!sid) {
+          void vscode.window.showWarningMessage('请输入有效的会话 ID。');
+          break;
+        }
+        const ok = this.coordinator.restoreSession(sid);
+        if (ok) {
+          void vscode.window.showInformationMessage(`会话「${sid}」已恢复。`);
+        } else {
+          void vscode.window.showWarningMessage(`回收站中未找到 ID 为「${sid}」的会话。`);
+        }
+        break;
+      }
+      case 'session:payload': {
+        this.coordinator.updateSessionPayload(msg.sessionId, msg.payload);
+        break;
+      }
+      case 'rules:rewrite':
+        void (async () => {
+          try {
+            const res = await ensurePchatRules(true);
+            this.coordinator.setRulesStatus(res);
+            this.post(webview, {
+              type: 'rules:result',
+              payload: { ok: res.status === 'ok', message: res.message },
+            });
+          } catch (e: any) {
+            const errMsg = e?.message || String(e);
+            this.coordinator.setRulesStatus({ status: 'error', message: errMsg, timestamp: Date.now() });
+            this.post(webview, {
+              type: 'rules:result',
+              payload: { ok: false, message: `写入规则失败：${errMsg}` },
+            });
+          }
+        })();
+        break;
       case 'file:pick':
         void this.pickFiles(webview);
         break;
@@ -254,11 +297,16 @@ export class PchatSidePanelProvider implements vscode.WebviewViewProvider {
     if (q) {
       filtered = items.filter((it) => it.rel.toLowerCase().includes(q));
     } else {
-      const openPaths = new Set(
-        vscode.workspace.textDocuments
-          .filter((d) => d.uri.scheme === 'file')
-          .map((d) => d.uri.fsPath)
-      );
+      // 获取当前真正处于打开状态（各个 Tab 分组中）的文件
+      const openPaths = new Set<string>();
+      for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+          const input = tab.input as any;
+          if (input && input.uri && input.uri.scheme === 'file') {
+            openPaths.add(input.uri.fsPath);
+          }
+        }
+      }
       const openedItems = items.filter((it) => openPaths.has(it.fsPath));
       const restItems = items.filter((it) => !openPaths.has(it.fsPath));
       filtered = [...openedItems, ...restItems];

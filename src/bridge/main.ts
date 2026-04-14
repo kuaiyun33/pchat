@@ -60,6 +60,14 @@ async function main(): Promise<void> {
   /** 单一飞行中的连接 Promise，避免链式 `then` 无限增长与断线后状态错乱。 */
   let connecting: Promise<void> | undefined;
 
+  /* ── 应用层心跳 ── */
+  /** Bridge 每隔此毫秒数向 Extension 发一次 ping。 */
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  /** 超过此毫秒数未收到 pong 则认定连接失效，主动断开。 */
+  const HEARTBEAT_TIMEOUT_MS = 60_000;
+  let lastPongAt = 0;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
   const flushReject = (reason: string) => {
     const err = new Error(reason);
     for (const p of pending.values()) {
@@ -69,6 +77,11 @@ async function main(): Promise<void> {
   };
 
   const onFrame = (msg: IpcMessage): void => {
+    if (msg.type === 'pong') {
+      /* 心跳回复：更新最后收到时间 */
+      lastPongAt = Date.now();
+      return;
+    }
     if (msg.type !== 'waitResult') {
       return;
     }
@@ -121,6 +134,33 @@ async function main(): Promise<void> {
     });
   };
 
+  /** 清理心跳定时器。 */
+  const clearHeartbeat = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  };
+
+  /** 启动心跳定时器：定期发 ping，超时则断开。 */
+  const startHeartbeat = (): void => {
+    clearHeartbeat();
+    lastPongAt = Date.now(); // 连接刚建立时视为一次隐含的 pong
+    heartbeatTimer = setInterval(() => {
+      if (!socket || socket.destroyed) {
+        clearHeartbeat();
+        return;
+      }
+      /* 检查上次 pong 是否已超时 */
+      if (Date.now() - lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+        clearHeartbeat();
+        socket.destroy(); // 触发 close → triggerReconnectAndResend
+        return;
+      }
+      sendMsg({ type: 'ping' });
+    }, HEARTBEAT_INTERVAL_MS);
+  };
+
   const attachSocket = (s: net.Socket): void => {
     socket?.destroy();
     socket = s;
@@ -129,6 +169,7 @@ async function main(): Promise<void> {
     s.on('data', (c) => pushBuf(c));
     s.on('close', () => {
       if (socket === s) {
+        clearHeartbeat();
         socket = undefined;
         connecting = undefined;
         triggerReconnectAndResend();
@@ -136,11 +177,13 @@ async function main(): Promise<void> {
     });
     s.on('error', () => {
       if (socket === s) {
+        clearHeartbeat();
         socket = undefined;
         connecting = undefined;
         triggerReconnectAndResend();
       }
     });
+    startHeartbeat();
   };
 
   /**

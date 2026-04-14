@@ -104,9 +104,20 @@ export class PchatIpcServer {
     const encoded = encodeIpcMessage(message);
     for (const client of this.clients) {
       if (!client.socket.destroyed) {
-        client.socket.write(encoded);
+        try {
+          client.socket.write(encoded);
+        } catch {
+          /* socket 可能处于 ending/closed 但尚未触发 close 事件，忽略写入错误 */
+        }
       }
     }
+  }
+
+  /**
+   * 当前是否有活跃的 Bridge TCP 连接。
+   */
+  get isConnected(): boolean {
+    return this.clients.size > 0;
   }
 
   /**
@@ -147,12 +158,19 @@ export class PchatIpcServer {
         break;
       }
       client.inbound = Buffer.from(decoded.rest);
-      this.dispatch(decoded.msg);
+      this.dispatch(decoded.msg, client);
     }
   }
 
-  private dispatch(msg: IpcMessage): void {
-    if (msg.type === 'bridgeHello' || msg.type === 'ping') {
+  private dispatch(msg: IpcMessage, client: { socket: net.Socket; inbound: Buffer }): void {
+    if (msg.type === 'bridgeHello') {
+      return;
+    }
+    if (msg.type === 'ping') {
+      /* 心跳：立即向来源 Bridge 回复 pong */
+      if (!client.socket.destroyed) {
+        client.socket.write(encodeIpcMessage({ type: 'pong' }));
+      }
       return;
     }
     if (msg.type === 'waitRequest') {

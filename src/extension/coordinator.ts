@@ -16,12 +16,17 @@ import { getCursorAuthInfo, type CursorAuthInfo } from './cursorAuth.js';
 const SETTINGS_KEY = 'pchat.settings';
 const SESSIONS_KEY = 'pchat.sessions';
 const ACTIVE_SESSION_KEY = 'pchat.activeSessionId';
+const DELETED_SESSIONS_KEY = 'pchat.deletedSessions';
+
+/** 回收站最多保留的已删除会话数量。 */
+const MAX_DELETED_SESSIONS = 20;
 
 /** 持久化的会话与消息（精简结构，避免 globalState 过大）。 */
 export type StoredSession = {
   readonly id: string;
   readonly title: string;
   readonly messages: readonly StoredChatMessage[];
+  readonly payload?: { enabled: boolean; position: 'head' | 'tail'; text: string };
 };
 
 export type StoredChatMessage = {
@@ -33,14 +38,10 @@ export type StoredChatMessage = {
 
 export type PchatSettings = {
   autoRenew: boolean;
-  /** Agent 侧超时（分钟），用于续期计算与进度条。 */
   agentTimeoutMin: number;
-  /** 在超时前多少分钟发送 `TIMEOUT_RENEW`（须小于 agent 超时）。 */
   renewBeforeMin: number;
-  /**
-   * MCP / 工具侧上限（分钟），仅用于与 Agent 超时取较小值绘制进度条（与 Cursor 工具超时配置对齐参考）。
-   */
   backendTimeoutMin: number;
+  globalPayload?: { enabled: boolean; position: 'head' | 'tail'; text: string };
 };
 
 const DEFAULT_SETTINGS: PchatSettings = {
@@ -48,6 +49,7 @@ const DEFAULT_SETTINGS: PchatSettings = {
   agentTimeoutMin: 110,
   renewBeforeMin: 5,
   backendTimeoutMin: 1440,
+  globalPayload: { enabled: false, position: 'tail', text: '' },
 };
 
 /**
@@ -58,8 +60,35 @@ const DEFAULT_SETTINGS: PchatSettings = {
  */
 const FORCE_RENEW_INTERVAL_MS = 55 * 60_000;
 
+/** 每个会话最多保留的消息条数硬上限。 */
+const MAX_MESSAGES_PER_SESSION = 100;
+/**
+ * 每个会话消息体（body）的总字节数软上限（约 2MB）。
+ * 超出时从最旧的消息开始裁剪，防止含 base64 图片的消息导致 globalState 膨胀。
+ */
+const MAX_SESSION_BODY_BYTES = 2 * 1024 * 1024;
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
+}
+
+/**
+ * 裁剪消息列表：先限制条数（硬上限），再限制总字节数（软上限）。
+ * 超出字节上限时从最旧的消息开始移除，但至少保留最后一条。
+ */
+function trimMessages(msgs: StoredChatMessage[]): StoredChatMessage[] {
+  let trimmed = msgs.length > MAX_MESSAGES_PER_SESSION
+    ? msgs.slice(-MAX_MESSAGES_PER_SESSION)
+    : msgs;
+  let totalBytes = 0;
+  for (const m of trimmed) {
+    totalBytes += Buffer.byteLength(m.body, 'utf8');
+  }
+  while (trimmed.length > 1 && totalBytes > MAX_SESSION_BODY_BYTES) {
+    totalBytes -= Buffer.byteLength(trimmed[0].body, 'utf8');
+    trimmed = trimmed.slice(1);
+  }
+  return trimmed;
 }
 
 /**
@@ -81,6 +110,7 @@ export function normalizePchatSettings(raw: Partial<PchatSettings> | undefined):
     agentTimeoutMin,
     renewBeforeMin,
     backendTimeoutMin,
+    globalPayload: s.globalPayload ?? { enabled: false, position: 'tail', text: '' },
   };
 }
 
@@ -96,11 +126,24 @@ export class PchatCoordinator {
   private readonly renewedSessionKeys = new Set<string>();
   /** 每个会话最近一次自动续期时间戳 */
   private readonly lastAutoRenewAt = new Map<string, number>();
+  /** 每个会话的运行元数据：创建时间、保活次数 */
+  private readonly sessionMeta = new Map<string, { createdAt: number; renewCount: number }>();
   private settings: PchatSettings = { ...DEFAULT_SETTINGS };
   private sessions: StoredSession[] = [];
+  /** 已删除会话回收站，支持通过 ID 恢复。 */
+  private deletedSessions: StoredSession[] = [];
   private activeSessionId = '';
   private bridgeConnected = false;
   private cursorAuthInfo?: CursorAuthInfo;
+  /** persistSessions 防抖定时器，避免高频序列化。 */
+  private persistDebounce: ReturnType<typeof setTimeout> | undefined;
+  /** rules 自动安装状态，传给 Webview */
+  private rulesStatus?: { status: 'ok' | 'error' | 'disabled'; message: string; timestamp: number };
+
+  setRulesStatus(status: { status: 'ok' | 'error' | 'disabled'; message: string; timestamp: number }): void {
+    this.rulesStatus = status;
+    this.postWaitUpdate();
+  }
 
   /**
    * @param context - 扩展上下文，用于读写 `globalState`
@@ -113,24 +156,12 @@ export class PchatCoordinator {
     private readonly ipc: PchatIpcServer,
   ) {
     this.loadSessions();
+    this.loadDeletedSessions();
     this.settings = this.loadSettings();
 
-    // 异步加载 Cursor Auth 状态，并在完成后推送状态更新
     getCursorAuthInfo().then((info) => {
       this.cursorAuthInfo = info;
       this.postWaitUpdate();
-
-      // 单独拉取使用量，防止网络超时阻塞基础状态的展示
-      if (info.accessToken) {
-        import('./cursorAuth.js').then(({ fetchStripeUsage }) => {
-          fetchStripeUsage(info.accessToken!).then(usd => {
-            if (usd && this.cursorAuthInfo) {
-               this.cursorAuthInfo.stripeUsageUsd = usd;
-               this.postWaitUpdate();
-            }
-          });
-        });
-      }
     });
   }
 
@@ -144,8 +175,10 @@ export class PchatCoordinator {
 
   /**
    * 从磁盘恢复后推送给 Webview。
+   * 同步 IPC 实际连接状态，避免 Webview 恢复时显示过时的离线状态。
    */
   pushFullState(): void {
+    this.bridgeConnected = this.ipc.isConnected;
     this.postWaitUpdate();
   }
 
@@ -158,6 +191,7 @@ export class PchatCoordinator {
       return;
     }
     this.ensureSessionForMcp(sessionKey, payload.title);
+    this.ensureSessionMeta(sessionKey);
     if (!this.activeSessionId.trim()) {
       this.activeSessionId = sessionKey;
       void this.persistActiveSession();
@@ -186,6 +220,27 @@ export class PchatCoordinator {
     this.postWaitUpdate();
   }
 
+  private assembleTextWithPayload(sessionId: string, baseText: string): string {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    const gPayload = this.settings.globalPayload;
+    const sPayload = session?.payload;
+    let headStrs: string[] = [];
+    let tailStrs: string[] = [];
+    if (gPayload?.enabled && gPayload.text.trim()) {
+      if (gPayload.position === 'head') headStrs.push(gPayload.text);
+      else tailStrs.push(gPayload.text);
+    }
+    if (sPayload?.enabled && sPayload.text.trim()) {
+      if (sPayload.position === 'head') headStrs.push(sPayload.text);
+      else tailStrs.push(sPayload.text);
+    }
+    const result: string[] = [];
+    if (headStrs.length) result.push(headStrs.join('\\n\\n'));
+    result.push(baseText);
+    if (tailStrs.length) result.push(tailStrs.join('\\n\\n'));
+    return result.join('\\n\\n');
+  }
+
   /**
    * 用户从输入框提交（对当前会话队列队首解析）。
    */
@@ -199,6 +254,9 @@ export class PchatCoordinator {
     if (!front) {
       return false;
     }
+    
+    const assembledText = this.assembleTextWithPayload(key, text);
+
     this.clearRenewTimer(front.requestId);
     q.shift();
     if (q.length === 0) {
@@ -206,13 +264,45 @@ export class PchatCoordinator {
     } else {
       this.queues.set(key, q);
     }
-    this.appendUserMessage(key, text);
-    this.ipc.sendWaitResult({ requestId: front.requestId, text });
+    this.appendUserMessage(key, assembledText);
+    this.ipc.sendWaitResult({ requestId: front.requestId, text: assembledText });
     this.scheduleRenewIfNeeded(key);
     this.postWaitUpdate();
     return true;
   }
+  /**
+   * 群发消息到选定的一组会话中。
+   */
+  broadcastSelectedUserText(sessionIds: string[], text: string): void {
+    const ids = new Set(sessionIds);
+    let sent = false;
+    for (const key of ids) {
+      const q = this.queues.get(key);
+      const front = q?.[0];
+      const assembledText = this.assembleTextWithPayload(key, text);
 
+      if (front) {
+        this.clearRenewTimer(front.requestId);
+        q.shift();
+        if (q.length === 0) {
+          this.queues.delete(key);
+        } else {
+          this.queues.set(key, q);
+        }
+        this.appendUserMessage(key, assembledText);
+        this.ipc.sendWaitResult({ requestId: front.requestId, text: assembledText });
+        this.scheduleRenewIfNeeded(key);
+      } else {
+        // 未在排队的情况下直接录入会话中
+        this.appendUserMessage(key, assembledText);
+      }
+      sent = true;
+    }
+    if (sent) {
+      this.pushFullState();
+      this.postWaitUpdate();
+    }
+  }
   /**
    * 取消队列中某条等待（向 Bridge 返回哨兵，侧栏可删除排队项或放弃当前）。
    */
@@ -257,6 +347,14 @@ export class PchatCoordinator {
     for (const key of this.queues.keys()) {
       this.scheduleRenewIfNeeded(key);
     }
+  }
+
+  updateSessionPayload(sessionId: string, payload: { enabled: boolean; position: 'head' | 'tail'; text: string; }): void {
+    const key = sessionId.trim();
+    if (!key) return;
+    this.sessions = this.sessions.map((s) => (s.id === key ? { ...s, payload } : s));
+    void this.persistSessions();
+    this.pushFullState();
   }
 
   setActiveSession(id: string): void {
@@ -306,6 +404,12 @@ export class PchatCoordinator {
     }
     this.queues.delete(key);
 
+    // 将被删除的会话存入回收站
+    const removed = this.sessions.find((s) => s.id === key);
+    if (removed) {
+      this.pushToDeletedSessions(removed);
+    }
+
     this.sessions = this.sessions.filter((s) => s.id !== key);
     if (!this.sessions.some((s) => s.id === this.activeSessionId)) {
       this.activeSessionId = this.sessions[0]?.id ?? '';
@@ -352,6 +456,10 @@ export class PchatCoordinator {
       }
     }
     this.queues.clear();
+    // 将所有会话存入回收站
+    for (const s of this.sessions) {
+      this.pushToDeletedSessions(s);
+    }
     this.sessions = [];
     this.activeSessionId = '';
     void this.persistSessions();
@@ -426,6 +534,8 @@ export class PchatCoordinator {
       sessionQueueCounts: Object.fromEntries(
         [...this.queues.entries()].map(([k, v]) => [k, v.length]),
       ),
+      // 当前活动会话的运行元数据
+      sessionMeta: key ? this.sessionMeta.get(key) : undefined,
     };
   }
 
@@ -439,6 +549,7 @@ export class PchatCoordinator {
         bridgeConnected: this.bridgeConnected,
         waitSnapshot: this.buildWaitSnapshot(),
         cursorInfo: this.cursorAuthInfo,
+        rulesStatus: this.rulesStatus,
       },
     });
   }
@@ -466,12 +577,23 @@ export class PchatCoordinator {
     if (q.length === 0) {
       this.queues.delete(sessionKey);
     }
-    /* 标记该会话刚发生续期，并记录时间戳 */
+    /* 标记该会话刚发生续期，并记录时间戳与计数 */
     this.renewedSessionKeys.add(sessionKey);
     this.lastAutoRenewAt.set(sessionKey, Date.now());
+    const meta = this.sessionMeta.get(sessionKey);
+    if (meta) {
+      meta.renewCount += 1;
+    }
     this.ipc.sendWaitResult({ requestId, text: 'TIMEOUT_RENEW' });
     this.scheduleRenewIfNeeded(sessionKey);
     this.postWaitUpdate();
+  }
+
+  /** 确保会话元数据存在（首次创建时设置 createdAt）。 */
+  private ensureSessionMeta(sessionKey: string): void {
+    if (!this.sessionMeta.has(sessionKey)) {
+      this.sessionMeta.set(sessionKey, { createdAt: Date.now(), renewCount: 0 });
+    }
   }
 
   private clearRenewTimer(requestId: string): void {
@@ -506,9 +628,43 @@ export class PchatCoordinator {
       ts: Date.now(),
     };
     this.sessions = this.sessions.map((s) =>
-      s.id === sessionId ? { ...s, messages: [...s.messages, msg].slice(-400) } : s,
+      s.id === sessionId
+        ? { ...s, messages: trimMessages([...s.messages, msg]) }
+        : s,
     );
     void this.persistSessions();
+  }
+
+  /**
+   * 通过会话 ID 从回收站恢复已删除的会话。
+   * 返回恢复是否成功。
+   */
+  restoreSession(sessionId: string): boolean {
+    const key = sessionId.trim();
+    if (!key) {
+      return false;
+    }
+    // 检查是否已经存在于当前会话列表中
+    if (this.sessions.some((s) => s.id === key)) {
+      // 会话已存在，直接切换过去
+      this.activeSessionId = key;
+      void this.persistActiveSession();
+      this.pushFullState();
+      return true;
+    }
+    // 从回收站查找
+    const idx = this.deletedSessions.findIndex((s) => s.id === key);
+    if (idx < 0) {
+      return false;
+    }
+    const [restored] = this.deletedSessions.splice(idx, 1);
+    this.sessions.push(restored);
+    this.activeSessionId = restored.id;
+    void this.persistSessions();
+    void this.persistActiveSession();
+    void this.persistDeletedSessions();
+    this.pushFullState();
+    return true;
   }
 
   private loadSettings(): PchatSettings {
@@ -526,22 +682,66 @@ export class PchatCoordinator {
       this.activeSessionId =
         savedActive && filtered.some((s) => s.id === savedActive) ? savedActive : filtered[0].id;
       if (migrated) {
-        void this.persistSessions();
+        this.flushPersistSessions();
       }
       return;
     }
     this.sessions = [];
     this.activeSessionId = '';
     if (migrated && raw?.length) {
-      void this.persistSessions();
+      this.flushPersistSessions();
     }
   }
 
+  private loadDeletedSessions(): void {
+    this.deletedSessions = this.context.globalState.get<StoredSession[]>(DELETED_SESSIONS_KEY) ?? [];
+  }
+
+  /**
+   * 防抖持久化会话列表（500ms），合并高频写入。
+   * AI 快速连续发送多条消息时避免每条都 JSON 序列化整个 sessions 数组。
+   */
   private persistSessions(): void {
+    if (this.persistDebounce) {
+      clearTimeout(this.persistDebounce);
+    }
+    this.persistDebounce = setTimeout(() => {
+      this.persistDebounce = undefined;
+      void this.context.globalState.update(SESSIONS_KEY, this.sessions);
+    }, 500);
+  }
+
+  /** 立即写入会话（跳过防抖），用于 loadSessions 迁移等必须即时生效的场景。 */
+  private flushPersistSessions(): void {
+    if (this.persistDebounce) {
+      clearTimeout(this.persistDebounce);
+      this.persistDebounce = undefined;
+    }
     void this.context.globalState.update(SESSIONS_KEY, this.sessions);
   }
 
   private persistActiveSession(): void {
     void this.context.globalState.update(ACTIVE_SESSION_KEY, this.activeSessionId);
+  }
+
+  private persistDeletedSessions(): void {
+    void this.context.globalState.update(DELETED_SESSIONS_KEY, this.deletedSessions);
+  }
+
+  /**
+   * 将会话加入回收站头部，超出上限时从尾部淘汰最旧的。
+   * 为节省内存，仅保留 id 和 title，丢弃消息体。
+   */
+  private pushToDeletedSessions(session: StoredSession): void {
+    // 只保留 id + title，清空消息体以节省内存
+    const slim: StoredSession = { id: session.id, title: session.title, messages: [] };
+    // 如果回收站中已有同 ID 的旧记录，先移除
+    this.deletedSessions = this.deletedSessions.filter((s) => s.id !== session.id);
+    this.deletedSessions.unshift(slim);
+    // 超出上限时裁掉最旧的
+    if (this.deletedSessions.length > MAX_DELETED_SESSIONS) {
+      this.deletedSessions = this.deletedSessions.slice(0, MAX_DELETED_SESSIONS);
+    }
+    void this.persistDeletedSessions();
   }
 }
