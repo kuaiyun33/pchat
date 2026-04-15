@@ -1,22 +1,25 @@
 import * as fs from "node:fs";
 function logDebug(...args: any[]) {
-  fs.appendFileSync("/tmp/pchat.log", new Date().toISOString() + " [EXT] " + args.map(String).join(" ") + "\n");
+  fs.appendFileSync(
+    "/tmp/pchat.log",
+    new Date().toISOString() + " [EXT] " + args.map(String).join(" ") + "\n",
+  );
 }
 
 /**
  * @fileoverview 按会话排队 MCP 等待、驱动续期定时器，并与 Webview / IPC 桥接。
  */
 
-import * as vscode from 'vscode';
-import type { WaitRequestPayload } from '../shared/ipcProtocol.js';
-import type { PchatIpcServer } from './ipcServer.js';
-import type { ToWebviewMessage } from './webviewProtocol.js';
-import { getCursorAuthInfo, type CursorAuthInfo } from './cursorAuth.js';
+import * as vscode from "vscode";
+import type { WaitRequestPayload } from "../shared/ipcProtocol.js";
+import type { PchatIpcServer } from "./ipcServer.js";
+import type { ToWebviewMessage } from "./webviewProtocol.js";
+import { getCursorAuthInfo, type CursorAuthInfo } from "./cursorAuth.js";
 
-const SETTINGS_KEY = 'pchat.settings';
-const SESSIONS_KEY = 'pchat.sessions';
-const ACTIVE_SESSION_KEY = 'pchat.activeSessionId';
-const DELETED_SESSIONS_KEY = 'pchat.deletedSessions';
+const SETTINGS_KEY = "pchat.settings";
+const SESSIONS_KEY = "pchat.sessions";
+const ACTIVE_SESSION_KEY = "pchat.activeSessionId";
+const DELETED_SESSIONS_KEY = "pchat.deletedSessions";
 
 /** 回收站最多保留的已删除会话数量。 */
 const MAX_DELETED_SESSIONS = 20;
@@ -26,12 +29,16 @@ export type StoredSession = {
   readonly id: string;
   readonly title: string;
   readonly messages: readonly StoredChatMessage[];
-  readonly payload?: { enabled: boolean; position: 'head' | 'tail'; text: string };
+  readonly payload?: {
+    enabled: boolean;
+    position: "head" | "tail";
+    text: string;
+  };
 };
 
 export type StoredChatMessage = {
   readonly id: string;
-  readonly role: 'user' | 'assistant' | 'system';
+  readonly role: "user" | "assistant" | "system";
   readonly body: string;
   readonly ts: number;
 };
@@ -41,7 +48,11 @@ export type PchatSettings = {
   agentTimeoutMin: number;
   renewBeforeMin: number;
   backendTimeoutMin: number;
-  globalPayload?: { enabled: boolean; position: 'head' | 'tail'; text: string };
+  /** 强制续期间隔（分钟），防止 Cursor MCP 硬超时 */
+  forceRenewMin: number;
+  globalPayload?: { enabled: boolean; position: "head" | "tail"; text: string };
+  /** 是否在输入框下方展示广告跑马灯 */
+  showAd?: boolean;
 };
 
 const DEFAULT_SETTINGS: PchatSettings = {
@@ -49,16 +60,16 @@ const DEFAULT_SETTINGS: PchatSettings = {
   agentTimeoutMin: 110,
   renewBeforeMin: 5,
   backendTimeoutMin: 1440,
-  globalPayload: { enabled: false, position: 'tail', text: '' },
+  forceRenewMin: 20,
+  globalPayload: { enabled: false, position: "tail", text: "" },
+  showAd: true,
 };
 
 /**
- * 强制续期间隔（毫秒）。
  * Cursor 对 MCP 工具调用存在约 2 小时的硬性超时 (-32001)，
- * 此值必须远小于该上限以确保续期在超时前完成。
- * 设为 55 分钟，给 Cursor 底层留足安全裕量。
+ * 强制续期间隔必须远小于该上限，默认 20 分钟。
+ * 现在通过 settings.forceRenewMin 可配置。
  */
-const FORCE_RENEW_INTERVAL_MS = 55 * 60_000;
 
 /** 每个会话最多保留的消息条数硬上限。 */
 const MAX_MESSAGES_PER_SESSION = 100;
@@ -77,15 +88,16 @@ function clamp(n: number, lo: number, hi: number): number {
  * 超出字节上限时从最旧的消息开始移除，但至少保留最后一条。
  */
 function trimMessages(msgs: StoredChatMessage[]): StoredChatMessage[] {
-  let trimmed = msgs.length > MAX_MESSAGES_PER_SESSION
-    ? msgs.slice(-MAX_MESSAGES_PER_SESSION)
-    : msgs;
+  let trimmed =
+    msgs.length > MAX_MESSAGES_PER_SESSION
+      ? msgs.slice(-MAX_MESSAGES_PER_SESSION)
+      : msgs;
   let totalBytes = 0;
   for (const m of trimmed) {
-    totalBytes += Buffer.byteLength(m.body, 'utf8');
+    totalBytes += Buffer.byteLength(m.body, "utf8");
   }
   while (trimmed.length > 1 && totalBytes > MAX_SESSION_BODY_BYTES) {
-    totalBytes -= Buffer.byteLength(trimmed[0].body, 'utf8');
+    totalBytes -= Buffer.byteLength(trimmed[0].body, "utf8");
     trimmed = trimmed.slice(1);
   }
   return trimmed;
@@ -97,7 +109,9 @@ function trimMessages(msgs: StoredChatMessage[]): StoredChatMessage[] {
  *
  * @param raw - 局部覆盖或完整对象
  */
-export function normalizePchatSettings(raw: Partial<PchatSettings> | undefined): PchatSettings {
+export function normalizePchatSettings(
+  raw: Partial<PchatSettings> | undefined,
+): PchatSettings {
   const s = { ...DEFAULT_SETTINGS, ...raw };
   let agentTimeoutMin = clamp(Math.round(s.agentTimeoutMin), 1, 240);
   let renewBeforeMin = clamp(Math.round(s.renewBeforeMin), 1, 120);
@@ -105,12 +119,19 @@ export function normalizePchatSettings(raw: Partial<PchatSettings> | undefined):
     renewBeforeMin = Math.max(1, agentTimeoutMin - 1);
   }
   const backendTimeoutMin = clamp(Math.round(s.backendTimeoutMin), 1440, 21600);
+  const forceRenewMin = clamp(Math.round(s.forceRenewMin ?? 20), 1, 120);
   return {
     autoRenew: true, // 强制开启，无视持久化的旧值
     agentTimeoutMin,
     renewBeforeMin,
     backendTimeoutMin,
-    globalPayload: s.globalPayload ?? { enabled: false, position: 'tail', text: '' },
+    forceRenewMin,
+    globalPayload: s.globalPayload ?? {
+      enabled: false,
+      position: "tail",
+      text: "",
+    },
+    showAd: s.showAd !== false, // 默认开启广告
   };
 }
 
@@ -121,26 +142,40 @@ type QueueItem = WaitRequestPayload & { readonly enqueuedAt: number };
  */
 export class PchatCoordinator {
   private readonly queues = new Map<string, QueueItem[]>();
-  private readonly renewTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly renewTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   /** 记录刚刚自动续期的会话，下一次 enqueueWait 时跳过 appendAssistantMessage */
   private readonly renewedSessionKeys = new Set<string>();
   /** 每个会话最近一次自动续期时间戳 */
   private readonly lastAutoRenewAt = new Map<string, number>();
   /** 每个会话的运行元数据：创建时间、保活次数 */
-  private readonly sessionMeta = new Map<string, { createdAt: number; renewCount: number }>();
+  private readonly sessionMeta = new Map<
+    string,
+    { createdAt: number; renewCount: number }
+  >();
   private settings: PchatSettings = { ...DEFAULT_SETTINGS };
   private sessions: StoredSession[] = [];
   /** 已删除会话回收站，支持通过 ID 恢复。 */
   private deletedSessions: StoredSession[] = [];
-  private activeSessionId = '';
+  private activeSessionId = "";
   private bridgeConnected = false;
   private cursorAuthInfo?: CursorAuthInfo;
   /** persistSessions 防抖定时器，避免高频序列化。 */
   private persistDebounce: ReturnType<typeof setTimeout> | undefined;
   /** rules 自动安装状态，传给 Webview */
-  private rulesStatus?: { status: 'ok' | 'error' | 'disabled'; message: string; timestamp: number };
+  private rulesStatus?: {
+    status: "ok" | "error" | "disabled";
+    message: string;
+    timestamp: number;
+  };
 
-  setRulesStatus(status: { status: 'ok' | 'error' | 'disabled'; message: string; timestamp: number }): void {
+  setRulesStatus(status: {
+    status: "ok" | "error" | "disabled";
+    message: string;
+    timestamp: number;
+  }): void {
     this.rulesStatus = status;
     this.postWaitUpdate();
   }
@@ -167,10 +202,32 @@ export class PchatCoordinator {
 
   /**
    * Bridge 套接字连上或断开时由面板更新，用于顶部状态点。
+   * 重连时顺便清理「无消息且无排队」的孤儿会话（重试/断线残留）。
    */
   setBridgeConnected(connected: boolean): void {
+    const wasDisconnected = !this.bridgeConnected;
     this.bridgeConnected = connected;
+    if (connected && wasDisconnected) {
+      this.pruneOrphanedSessions();
+    }
     this.postWaitUpdate();
+  }
+
+  /**
+   * 删除所有无消息且无排队的空会话，避免重试/断线留下的孤儿条目堆积在侧栏。
+   * 不会清理当前活动会话，即使它是空的（用户可能正要输入）。
+   */
+  private pruneOrphanedSessions(): void {
+    const before = this.sessions.length;
+    this.sessions = this.sessions.filter((s) => {
+      if (s.id === this.activeSessionId) return true;
+      if (s.messages.length > 0) return true;
+      if (this.queues.has(s.id) && this.queues.get(s.id)!.length > 0) return true;
+      return false;
+    });
+    if (this.sessions.length < before) {
+      void this.persistSessions();
+    }
   }
 
   /**
@@ -199,7 +256,7 @@ export class PchatCoordinator {
 
     const item: QueueItem = { ...payload, enqueuedAt: Date.now() };
     const q = this.queues.get(sessionKey) ?? [];
-    
+
     if (q.length > 0 && q[q.length - 1].message === payload.message) {
       // 这是一个来自于 Cursor 工具超时的底层重试请求，直接覆盖掉旧的等待，防止 UI 出现多个队列和分裂
       this.clearRenewTimer(q[q.length - 1].requestId);
@@ -227,18 +284,18 @@ export class PchatCoordinator {
     let headStrs: string[] = [];
     let tailStrs: string[] = [];
     if (gPayload?.enabled && gPayload.text.trim()) {
-      if (gPayload.position === 'head') headStrs.push(gPayload.text);
+      if (gPayload.position === "head") headStrs.push(gPayload.text);
       else tailStrs.push(gPayload.text);
     }
     if (sPayload?.enabled && sPayload.text.trim()) {
-      if (sPayload.position === 'head') headStrs.push(sPayload.text);
+      if (sPayload.position === "head") headStrs.push(sPayload.text);
       else tailStrs.push(sPayload.text);
     }
     const result: string[] = [];
-    if (headStrs.length) result.push(headStrs.join('\\n\\n'));
+    if (headStrs.length) result.push(headStrs.join("\\n\\n"));
     result.push(baseText);
-    if (tailStrs.length) result.push(tailStrs.join('\\n\\n'));
-    return result.join('\\n\\n');
+    if (tailStrs.length) result.push(tailStrs.join("\\n\\n"));
+    return result.join("\\n\\n");
   }
 
   /**
@@ -254,7 +311,7 @@ export class PchatCoordinator {
     if (!front) {
       return false;
     }
-    
+
     const assembledText = this.assembleTextWithPayload(key, text);
 
     this.clearRenewTimer(front.requestId);
@@ -265,7 +322,10 @@ export class PchatCoordinator {
       this.queues.set(key, q);
     }
     this.appendUserMessage(key, assembledText);
-    this.ipc.sendWaitResult({ requestId: front.requestId, text: assembledText });
+    this.ipc.sendWaitResult({
+      requestId: front.requestId,
+      text: assembledText,
+    });
     this.scheduleRenewIfNeeded(key);
     this.postWaitUpdate();
     return true;
@@ -290,7 +350,10 @@ export class PchatCoordinator {
           this.queues.set(key, q);
         }
         this.appendUserMessage(key, assembledText);
-        this.ipc.sendWaitResult({ requestId: front.requestId, text: assembledText });
+        this.ipc.sendWaitResult({
+          requestId: front.requestId,
+          text: assembledText,
+        });
         this.scheduleRenewIfNeeded(key);
       } else {
         // 未在排队的情况下直接录入会话中
@@ -329,7 +392,7 @@ export class PchatCoordinator {
     }
     this.ipc.sendWaitResult({
       requestId: removed.requestId,
-      text: '__USER_DISMISSED_QUEUE__',
+      text: "__USER_DISMISSED_QUEUE__",
     });
     this.scheduleRenewIfNeeded(key);
     this.postWaitUpdate();
@@ -349,10 +412,15 @@ export class PchatCoordinator {
     }
   }
 
-  updateSessionPayload(sessionId: string, payload: { enabled: boolean; position: 'head' | 'tail'; text: string; }): void {
+  updateSessionPayload(
+    sessionId: string,
+    payload: { enabled: boolean; position: "head" | "tail"; text: string },
+  ): void {
     const key = sessionId.trim();
     if (!key) return;
-    this.sessions = this.sessions.map((s) => (s.id === key ? { ...s, payload } : s));
+    this.sessions = this.sessions.map((s) =>
+      s.id === key ? { ...s, payload } : s,
+    );
     void this.persistSessions();
     this.pushFullState();
   }
@@ -383,8 +451,10 @@ export class PchatCoordinator {
     if (!key) {
       return;
     }
-    const nextTitle = title.trim() || '未命名';
-    this.sessions = this.sessions.map((s) => (s.id === key ? { ...s, title: nextTitle } : s));
+    const nextTitle = title.trim() || "未命名";
+    this.sessions = this.sessions.map((s) =>
+      s.id === key ? { ...s, title: nextTitle } : s,
+    );
     void this.persistSessions();
     this.pushFullState();
   }
@@ -399,7 +469,10 @@ export class PchatCoordinator {
       for (const item of q) {
         this.clearRenewTimer(item.requestId);
         // 向 Bridge 发送取消哨兵，避免 Agent 永远卡死
-        this.ipc.sendWaitResult({ requestId: item.requestId, text: '__USER_DISMISSED_QUEUE__' });
+        this.ipc.sendWaitResult({
+          requestId: item.requestId,
+          text: "__USER_DISMISSED_QUEUE__",
+        });
       }
     }
     this.queues.delete(key);
@@ -412,7 +485,7 @@ export class PchatCoordinator {
 
     this.sessions = this.sessions.filter((s) => s.id !== key);
     if (!this.sessions.some((s) => s.id === this.activeSessionId)) {
-      this.activeSessionId = this.sessions[0]?.id ?? '';
+      this.activeSessionId = this.sessions[0]?.id ?? "";
     }
     void this.persistSessions();
     void this.persistActiveSession();
@@ -452,7 +525,10 @@ export class PchatCoordinator {
     for (const q of this.queues.values()) {
       for (const item of q) {
         this.clearRenewTimer(item.requestId);
-        this.ipc.sendWaitResult({ requestId: item.requestId, text: '__USER_DISMISSED_QUEUE__' });
+        this.ipc.sendWaitResult({
+          requestId: item.requestId,
+          text: "__USER_DISMISSED_QUEUE__",
+        });
       }
     }
     this.queues.clear();
@@ -461,7 +537,7 @@ export class PchatCoordinator {
       this.pushToDeletedSessions(s);
     }
     this.sessions = [];
-    this.activeSessionId = '';
+    this.activeSessionId = "";
     void this.persistSessions();
     void this.persistActiveSession();
     this.pushFullState();
@@ -485,19 +561,29 @@ export class PchatCoordinator {
       }
       return;
     }
-    const title = titleHint?.trim() || this.defaultTitleForSessionKey(sessionKey);
+    const title =
+      titleHint?.trim() || this.defaultTitleForSessionKey(sessionKey);
     this.sessions = [...this.sessions, { id: sessionKey, title, messages: [] }];
     void this.persistSessions();
   }
 
   private defaultTitleForSessionKey(sessionKey: string): string {
-    // 新短格式: "0404-1401-a716" → "04/04 14:01"
-    const shortMatch = sessionKey.match(/^(\d{2})(\d{2})-(\d{2})(\d{2})-[0-9a-f]{4}$/i);
-    if (shortMatch) {
-      return `${shortMatch[1]}/${shortMatch[2]} ${shortMatch[3]}:${shortMatch[4]}`;
+    // 新格式 "1941-a716b2c3" → "19:41"
+    const newMatch = sessionKey.match(
+      /^(\d{2})(\d{2})-[0-9a-f]{4,8}$/i,
+    );
+    if (newMatch) {
+      return `${newMatch[1]}:${newMatch[2]}`;
     }
-    if (sessionKey === 'pchat-main') {
-      return '主对话';
+    // 兼容旧格式 "0404-1401-a716" → "04/04 14:01"
+    const oldMatch = sessionKey.match(
+      /^(\d{2})(\d{2})-(\d{2})(\d{2})-[0-9a-f]{4,8}$/i,
+    );
+    if (oldMatch) {
+      return `${oldMatch[1]}/${oldMatch[2]} ${oldMatch[3]}:${oldMatch[4]}`;
+    }
+    if (sessionKey === "pchat-main") {
+      return "主对话";
     }
     return `会话 ${sessionKey.slice(0, 10)}`;
   }
@@ -506,7 +592,7 @@ export class PchatCoordinator {
     const key = this.activeSessionId.trim();
     const q = key ? (this.queues.get(key) ?? []) : [];
     const front = q[0];
-    const progressTotalMs = FORCE_RENEW_INTERVAL_MS;
+    const progressTotalMs = this.getForceRenewIntervalMs();
     const pendingWaits = q.map((item, index) => ({
       requestId: item.requestId,
       message: item.message,
@@ -524,7 +610,7 @@ export class PchatCoordinator {
             message: front.message,
             prompt: front.prompt,
             enqueuedAt: front.enqueuedAt,
-            deadlineMs: front.enqueuedAt + FORCE_RENEW_INTERVAL_MS,
+            deadlineMs: front.enqueuedAt + this.getForceRenewIntervalMs(),
             /** 进度条总时长（强制续期间隔） */
             progressTotalMs,
           }
@@ -541,7 +627,7 @@ export class PchatCoordinator {
 
   private postWaitUpdate(): void {
     this.post({
-      type: 'state',
+      type: "state",
       payload: {
         sessions: this.sessions,
         activeSessionId: this.activeSessionId,
@@ -554,6 +640,11 @@ export class PchatCoordinator {
     });
   }
 
+  /** 从 settings 动态获取强制续期间隔（毫秒）。 */
+  private getForceRenewIntervalMs(): number {
+    return (this.settings.forceRenewMin ?? 20) * 60_000;
+  }
+
   private scheduleRenewIfNeeded(sessionKey: string): void {
     const q = this.queues.get(sessionKey);
     const front = q?.[0];
@@ -561,8 +652,11 @@ export class PchatCoordinator {
       return;
     }
     this.clearRenewTimer(front.requestId);
-    // 无条件强制续期，间隔固定 55 分钟，远低于 Cursor 的 ~2 小时硬超时
-    const t = setTimeout(() => this.fireRenew(front.requestId, sessionKey), FORCE_RENEW_INTERVAL_MS);
+    // 无条件强制续期，间隔由 settings.forceRenewMin 控制（默认 20 分钟）
+    const t = setTimeout(
+      () => this.fireRenew(front.requestId, sessionKey),
+      this.getForceRenewIntervalMs(),
+    );
     this.renewTimers.set(front.requestId, t);
   }
 
@@ -584,7 +678,7 @@ export class PchatCoordinator {
     if (meta) {
       meta.renewCount += 1;
     }
-    this.ipc.sendWaitResult({ requestId, text: 'TIMEOUT_RENEW' });
+    this.ipc.sendWaitResult({ requestId, text: "TIMEOUT_RENEW" });
     this.scheduleRenewIfNeeded(sessionKey);
     this.postWaitUpdate();
   }
@@ -592,7 +686,10 @@ export class PchatCoordinator {
   /** 确保会话元数据存在（首次创建时设置 createdAt）。 */
   private ensureSessionMeta(sessionKey: string): void {
     if (!this.sessionMeta.has(sessionKey)) {
-      this.sessionMeta.set(sessionKey, { createdAt: Date.now(), renewCount: 0 });
+      this.sessionMeta.set(sessionKey, {
+        createdAt: Date.now(),
+        renewCount: 0,
+      });
     }
   }
 
@@ -606,12 +703,12 @@ export class PchatCoordinator {
 
   private appendAssistantMessage(sessionKey: string, body: string): void {
     const sid = this.resolveStoredSessionId(sessionKey);
-    this.pushMessage(sid, 'assistant', body);
+    this.pushMessage(sid, "assistant", body);
   }
 
   private appendUserMessage(sessionKey: string, body: string): void {
     const sid = this.resolveStoredSessionId(sessionKey);
-    this.pushMessage(sid, 'user', body);
+    this.pushMessage(sid, "user", body);
   }
 
   private resolveStoredSessionId(sessionKey: string): string {
@@ -620,7 +717,11 @@ export class PchatCoordinator {
     return sessionKey;
   }
 
-  private pushMessage(sessionId: string, role: StoredChatMessage['role'], body: string): void {
+  private pushMessage(
+    sessionId: string,
+    role: StoredChatMessage["role"],
+    body: string,
+  ): void {
     const msg: StoredChatMessage = {
       id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role,
@@ -674,27 +775,31 @@ export class PchatCoordinator {
 
   private loadSessions(): void {
     const raw = this.context.globalState.get<StoredSession[]>(SESSIONS_KEY);
-    const savedActive = this.context.globalState.get<string>(ACTIVE_SESSION_KEY);
-    const filtered = (raw ?? []).filter((s) => s.id !== 'default');
+    const savedActive =
+      this.context.globalState.get<string>(ACTIVE_SESSION_KEY);
+    const filtered = (raw ?? []).filter((s) => s.id !== "default");
     const migrated = filtered.length !== (raw?.length ?? 0);
     if (filtered.length > 0) {
       this.sessions = filtered;
       this.activeSessionId =
-        savedActive && filtered.some((s) => s.id === savedActive) ? savedActive : filtered[0].id;
+        savedActive && filtered.some((s) => s.id === savedActive)
+          ? savedActive
+          : filtered[0].id;
       if (migrated) {
         this.flushPersistSessions();
       }
       return;
     }
     this.sessions = [];
-    this.activeSessionId = '';
+    this.activeSessionId = "";
     if (migrated && raw?.length) {
       this.flushPersistSessions();
     }
   }
 
   private loadDeletedSessions(): void {
-    this.deletedSessions = this.context.globalState.get<StoredSession[]>(DELETED_SESSIONS_KEY) ?? [];
+    this.deletedSessions =
+      this.context.globalState.get<StoredSession[]>(DELETED_SESSIONS_KEY) ?? [];
   }
 
   /**
@@ -721,11 +826,17 @@ export class PchatCoordinator {
   }
 
   private persistActiveSession(): void {
-    void this.context.globalState.update(ACTIVE_SESSION_KEY, this.activeSessionId);
+    void this.context.globalState.update(
+      ACTIVE_SESSION_KEY,
+      this.activeSessionId,
+    );
   }
 
   private persistDeletedSessions(): void {
-    void this.context.globalState.update(DELETED_SESSIONS_KEY, this.deletedSessions);
+    void this.context.globalState.update(
+      DELETED_SESSIONS_KEY,
+      this.deletedSessions,
+    );
   }
 
   /**
@@ -734,13 +845,22 @@ export class PchatCoordinator {
    */
   private pushToDeletedSessions(session: StoredSession): void {
     // 只保留 id + title，清空消息体以节省内存
-    const slim: StoredSession = { id: session.id, title: session.title, messages: [] };
+    const slim: StoredSession = {
+      id: session.id,
+      title: session.title,
+      messages: [],
+    };
     // 如果回收站中已有同 ID 的旧记录，先移除
-    this.deletedSessions = this.deletedSessions.filter((s) => s.id !== session.id);
+    this.deletedSessions = this.deletedSessions.filter(
+      (s) => s.id !== session.id,
+    );
     this.deletedSessions.unshift(slim);
     // 超出上限时裁掉最旧的
     if (this.deletedSessions.length > MAX_DELETED_SESSIONS) {
-      this.deletedSessions = this.deletedSessions.slice(0, MAX_DELETED_SESSIONS);
+      this.deletedSessions = this.deletedSessions.slice(
+        0,
+        MAX_DELETED_SESSIONS,
+      );
     }
     void this.persistDeletedSessions();
   }

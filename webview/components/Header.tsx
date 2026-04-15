@@ -190,6 +190,34 @@ export function Header({
 
               <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid var(--pchat-border)' }} />
 
+              <label class="pchat-settings-label">
+                <span>强制续期间隔（分钟）</span>
+                <div class="pchat-settings-stepper">
+                  <button
+                    type="button"
+                    class="pchat-settings-step-btn"
+                    disabled={(settings?.forceRenewMin ?? 20) <= 1}
+                    onClick={() => onSettingsChange?.({ forceRenewMin: Math.max(1, (settings?.forceRenewMin ?? 20) - 1) })}
+                  >
+                    −
+                  </button>
+                  <span class="pchat-settings-step-value">{settings?.forceRenewMin ?? 20}</span>
+                  <button
+                    type="button"
+                    class="pchat-settings-step-btn"
+                    disabled={(settings?.forceRenewMin ?? 20) >= 120}
+                    onClick={() => onSettingsChange?.({ forceRenewMin: Math.min(120, (settings?.forceRenewMin ?? 20) + 1) })}
+                  >
+                    +
+                  </button>
+                </div>
+              </label>
+              <div style={{ fontSize: '10px', opacity: 0.5, marginTop: '-6px' }}>
+                防止 Cursor 硬超时，建议 5~30 分钟
+              </div>
+
+              <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid var(--pchat-border)' }} />
+
               <div class="pchat-settings-section">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <strong>全局附加内容</strong>
@@ -238,6 +266,25 @@ export function Header({
                     />
                   </div>
                 )}
+              </div>
+
+              <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid var(--pchat-border)' }} />
+
+              <div class="pchat-settings-section">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px' }}>显示广告推荐</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={settings?.showAd !== false}
+                      onChange={(e) => {
+                        const checked = (e.target as HTMLInputElement).checked;
+                        onSettingsChange?.({ showAd: checked });
+                      }}
+                    />
+                    <span style={{ fontSize: '11px', opacity: 0.8 }}>{settings?.showAd !== false ? '开启' : '关闭'}</span>
+                  </label>
+                </div>
               </div>
 
             </div>

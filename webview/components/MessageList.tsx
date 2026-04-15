@@ -58,6 +58,9 @@ export function MessageList({
             <i class="bx bx-plug" style={{ fontSize: 36, opacity: 0.4, display: 'block', marginBottom: 12 }}></i>
             <strong style={{ fontSize: 14, color: 'var(--pchat-text)', display: 'block', marginBottom: 8 }}>等待接入</strong>
             <span style={{ opacity: 0.7 }}>请在新 Agent 对话框发送任意字符触发</span>
+            <span style={{ opacity: 0.45, fontSize: '11px', display: 'block', marginTop: 6 }}>
+              可同时开启多个 Cursor Agent 对话，每个对话对应一个独立会话
+            </span>
           </div>
         ) : !active ? (
           <div class="pchat-empty">

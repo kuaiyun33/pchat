@@ -9,7 +9,11 @@ export type PchatSettings = {
   agentTimeoutMin: number;
   renewBeforeMin: number;
   backendTimeoutMin: number;
+  /** 强制续期间隔（分钟），防止 Cursor MCP 硬超时 */
+  forceRenewMin: number;
   globalPayload?: { enabled: boolean; position: 'head' | 'tail'; text: string };
+  /** 是否在输入框下方展示广告跑马灯 */
+  showAd?: boolean;
 };
 
 /* ─── 消息 ─── */

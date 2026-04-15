@@ -6,6 +6,7 @@ if [[ ! -d node_modules ]]; then
   echo "[pchat] 未检测到 node_modules，正在执行 npm install…"
   npm install
 fi
+rm -f "$ROOT"/pchat-*.vsix
 npm run package
 echo ""
 shopt -s nullglob
