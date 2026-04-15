@@ -225,7 +225,7 @@ async function main(): Promise<void> {
 
   void ensureTcpConnected().catch(() => {});
 
-  const server = new Server({ name: 'pchat', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'pchat', version: '1.0.2' }, { capabilities: { tools: {} } });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [

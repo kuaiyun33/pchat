@@ -3,7 +3,7 @@
   "displayName": "PChat (Persistent Chat)",
   "publisher": "local",
   "description": "Cursor Agent 通过 MCP 在侧栏持久等待用户回复。",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"

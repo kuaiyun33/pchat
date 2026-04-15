@@ -7,6 +7,6 @@ echo   PChat 一键打包 VSIX
 echo   目录: %cd%
 echo ==========================================
 call scripts\package-vsix.bat
-call npm run build && xcopy /Y /E dist\* "%USERPROFILE%\.cursor\extensions\local.pchat-1.0.1\dist\"
+call npm run build && xcopy /Y /E dist\* "%USERPROFILE%\.cursor\extensions\local.pchat-1.0.2\dist\"
 echo.
 pause
