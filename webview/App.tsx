@@ -793,6 +793,7 @@ export function App({ vscode }: { vscode: VsCodeApi }) {
           applyCustomCmd={applyCustomCmd}
           sessionPayloadEnabled={active?.payload?.enabled ?? false}
           onOpenSessionPayload={() => setSessionPayloadModalOpen(true)}
+          showAd={state.settings?.showAd}
           taRef={taRef}
           imgInputRef={imgInputRef}
         />

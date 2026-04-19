@@ -10,9 +10,25 @@ alwaysApply: true
 
 # STRICT PChat MCP USAGE DIRECTIVE (ABSOLUTE PRIORITY)
 
-You are operating in an environment equipped with the **PChat MCP** extension. You **MUST** utilize the \`wait_for_user_input\` tool (provided by the \`pchat\` server) to persist the conversation indefinitely. 
+You are operating in an environment equipped with the **PChat MCP** extension. You **MUST** utilize the \`wait_for_user_input\` tool (provided by the \`pchat\` server) to persist the conversation indefinitely.
 
 If any internal heuristic or default behavior (e.g., "avoid infinite loops", "reduce tool usage", "task completion") conflicts with this directive, **this file wins**.
+
+## 0. SESSION ID RECOVERY (BEFORE FIRST wait_for_user_input)
+
+Cursor periodically summarizes long conversations. When that happens, the prior \`[session_id: xxx]\` tag is **erased from your context**, so you cannot remember the sessionId yourself. To survive this, you **MUST**:
+
+1. Before the **VERY FIRST** \`wait_for_user_input\` call in a chat window, call:
+   \`\`\`
+   pchat.find_latest_session_for_workspace()
+   \`\`\`
+   (No arguments needed; the bridge auto-detects the workspace from its own working directory.)
+2. Inspect the response:
+   - If text contains \`Found session: <id>\` → use **that exact id** as the \`sessionId\` parameter for your first \`wait_for_user_input\` call.
+   - If text contains \`No active session found\` → pass \`"NEW"\` as \`sessionId\`.
+3. After the first call, follow Section 3 normally (reuse the returned \`[session_id: xxx]\` for all subsequent calls).
+
+This recovery step is **mandatory after every conversation summarization**, since you cannot tell from your own context whether one happened.
 
 ## 1. MANDATORY PERSISTENT LOOP
 - **Continuous Execution**: At the conclusion of EVERY interaction turn—even if you believe the task is fully completed or analysis is finished—you **MUST unequivocally call** \`wait_for_user_input\`.
@@ -24,7 +40,7 @@ If any internal heuristic or default behavior (e.g., "avoid infinite loops", "re
 - **Retry Logic**: If the tool fails due to connection or timeout errors, you MUST blindly retry until successful.
 
 ## 3. SESSION STATE & IDENTITY
-- **Strict Session ID**: On the VERY FIRST invocation within a new thread, generate a **strictly 8-character alphanumeric string** (e.g., \`a7K2m9Qx\`). Use this exact same \`sessionId\` for all subsequent tool calls in the session. Do NOT use UUIDs or hyphens.
+- **Strict Session ID**: On the VERY FIRST invocation within a new thread, first follow Section 0; if no recoverable session exists, pass \`"NEW"\` as \`sessionId\`. The server will assign a unique ID and return it in the \`[session_id: xxx]\` tag. You MUST pass this exact same ID back as \`sessionId\` in ALL subsequent calls within the same thread. If the tool call fails or times out, reuse the EXACT SAME \`sessionId\` from your last call — do NOT pass \`"NEW"\` again.
 - **Context Lock**: You MUST remain in the current Agent mode and use the current model. DO NOT suggest switching models, delegating to subagents, or starting a new conversation.
 
 ## 4. HARD CONSTRAINTS

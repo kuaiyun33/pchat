@@ -11,5 +11,5 @@
     "resolveJsonModule": true,
     "types": ["node", "vscode"]
   },
-  "include": ["src/extension/**/*.ts", "src/shared/**/*.ts"]
+  "include": ["src/extension/**/*.ts", "src/shared/**/*.ts", "src/bridge/**/*.ts"]
 }

@@ -20,9 +20,21 @@ const SETTINGS_KEY = "pchat.settings";
 const SESSIONS_KEY = "pchat.sessions";
 const ACTIVE_SESSION_KEY = "pchat.activeSessionId";
 const DELETED_SESSIONS_KEY = "pchat.deletedSessions";
+const WORKSPACE_SESSIONS_KEY = "pchat.workspaceSessions";
 
 /** 回收站最多保留的已删除会话数量。 */
 const MAX_DELETED_SESSIONS = 20;
+
+/** workspace → sessionId 注册条目最大有效期（24 小时） */
+const WORKSPACE_SESSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60_000;
+/** 注册表条目数量上限，超过按 lastActiveTs 旧的淘汰 */
+const WORKSPACE_SESSION_MAX_ENTRIES = 100;
+
+/** workspace → sessionId 注册表条目 */
+type WorkspaceSessionEntry = {
+  sessionId: string;
+  lastActiveTs: number;
+};
 
 /** 持久化的会话与消息（精简结构，避免 globalState 过大）。 */
 export type StoredSession = {
@@ -159,11 +171,15 @@ export class PchatCoordinator {
   private sessions: StoredSession[] = [];
   /** 已删除会话回收站，支持通过 ID 恢复。 */
   private deletedSessions: StoredSession[] = [];
+  /** workspace 路径 → 最近活跃 sessionId 注册表 */
+  private workspaceSessions = new Map<string, WorkspaceSessionEntry>();
   private activeSessionId = "";
   private bridgeConnected = false;
   private cursorAuthInfo?: CursorAuthInfo;
   /** persistSessions 防抖定时器，避免高频序列化。 */
   private persistDebounce: ReturnType<typeof setTimeout> | undefined;
+  /** persistWorkspaceSessions 防抖定时器 */
+  private persistWorkspaceDebounce: ReturnType<typeof setTimeout> | undefined;
   /** rules 自动安装状态，传给 Webview */
   private rulesStatus?: {
     status: "ok" | "error" | "disabled";
@@ -192,6 +208,7 @@ export class PchatCoordinator {
   ) {
     this.loadSessions();
     this.loadDeletedSessions();
+    this.loadWorkspaceSessions();
     this.settings = this.loadSettings();
 
     getCursorAuthInfo().then((info) => {
@@ -249,6 +266,9 @@ export class PchatCoordinator {
     }
     this.ensureSessionForMcp(sessionKey, payload.title);
     this.ensureSessionMeta(sessionKey);
+    if (payload.workspacePath) {
+      this.recordSessionForWorkspace(payload.workspacePath, sessionKey);
+    }
     if (!this.activeSessionId.trim()) {
       this.activeSessionId = sessionKey;
       void this.persistActiveSession();
@@ -766,6 +786,80 @@ export class PchatCoordinator {
     void this.persistDeletedSessions();
     this.pushFullState();
     return true;
+  }
+
+  /**
+   * 记录某工作区最近一次活跃 sessionId；同 workspace 后写覆盖前写。
+   * 超出条目上限时按 lastActiveTs 旧的淘汰。
+   */
+  recordSessionForWorkspace(workspacePath: string, sessionId: string): void {
+    const wp = workspacePath.trim();
+    const sid = sessionId.trim();
+    if (!wp || !sid) return;
+    this.workspaceSessions.set(wp, { sessionId: sid, lastActiveTs: Date.now() });
+    if (this.workspaceSessions.size > WORKSPACE_SESSION_MAX_ENTRIES) {
+      const sorted = [...this.workspaceSessions.entries()].sort(
+        (a, b) => a[1].lastActiveTs - b[1].lastActiveTs,
+      );
+      const drop = sorted.length - WORKSPACE_SESSION_MAX_ENTRIES;
+      for (let i = 0; i < drop; i++) {
+        this.workspaceSessions.delete(sorted[i][0]);
+      }
+    }
+    this.persistWorkspaceSessions();
+  }
+
+  /**
+   * 查询某工作区最近活跃 sessionId；超出 maxAgeMs 视为失效。
+   *
+   * @returns 命中且未过期返回条目，否则 undefined
+   */
+  findLatestSessionForWorkspace(
+    workspacePath: string,
+    maxAgeMs: number = WORKSPACE_SESSION_DEFAULT_MAX_AGE_MS,
+  ): WorkspaceSessionEntry | undefined {
+    const wp = workspacePath.trim();
+    if (!wp) return undefined;
+    const entry = this.workspaceSessions.get(wp);
+    if (!entry) return undefined;
+    if (Date.now() - entry.lastActiveTs > maxAgeMs) {
+      this.workspaceSessions.delete(wp);
+      this.persistWorkspaceSessions();
+      return undefined;
+    }
+    /* 命中且会话仍在 sessions 列表里才认为可恢复，避免指向已被删除的 sessionId */
+    if (!this.sessions.some((s) => s.id === entry.sessionId)) {
+      this.workspaceSessions.delete(wp);
+      this.persistWorkspaceSessions();
+      return undefined;
+    }
+    return entry;
+  }
+
+  private loadWorkspaceSessions(): void {
+    const raw = this.context.globalState.get<Record<string, WorkspaceSessionEntry>>(
+      WORKSPACE_SESSIONS_KEY,
+    );
+    if (!raw) return;
+    for (const [wp, entry] of Object.entries(raw)) {
+      if (entry?.sessionId && typeof entry.lastActiveTs === "number") {
+        this.workspaceSessions.set(wp, {
+          sessionId: entry.sessionId,
+          lastActiveTs: entry.lastActiveTs,
+        });
+      }
+    }
+  }
+
+  private persistWorkspaceSessions(): void {
+    if (this.persistWorkspaceDebounce) {
+      clearTimeout(this.persistWorkspaceDebounce);
+    }
+    this.persistWorkspaceDebounce = setTimeout(() => {
+      this.persistWorkspaceDebounce = undefined;
+      const obj = Object.fromEntries(this.workspaceSessions);
+      void this.context.globalState.update(WORKSPACE_SESSIONS_KEY, obj);
+    }, 500);
   }
 
   private loadSettings(): PchatSettings {

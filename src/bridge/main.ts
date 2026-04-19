@@ -19,6 +19,7 @@ import {
   tryDecodeIpcMessage,
   type IpcMessage,
   type WaitRequestPayload,
+  type FindLatestSessionRequestPayload,
 } from '../shared/ipcProtocol.js';
 import { parseWaitSessionId } from './sessionKey.js';
 import { getCursorPchatBridgePortPath } from '../shared/cursorBridgePortFile.js';
@@ -27,6 +28,12 @@ type Pending = {
   readonly resolve: (text: string) => void;
   readonly reject: (err: Error) => void;
   readonly payload: WaitRequestPayload;
+};
+
+/** 待应答的 findLatestSessionRequest */
+type PendingLookup = {
+  readonly resolve: (sessionId: string | undefined) => void;
+  readonly reject: (err: Error) => void;
 };
 
 function readPortFile(extensionRoot: string): number | undefined {
@@ -55,6 +62,10 @@ function getExtensionRoot(): string {
 async function main(): Promise<void> {
   const extensionRoot = getExtensionRoot();
   const pending = new Map<string, Pending>();
+  /** 在飞中的 workspace → sessionId 查询 */
+  const pendingLookups = new Map<string, PendingLookup>();
+  /** Bridge 启动时确定的工作区路径，传给 Extension 用于注册 */
+  const workspacePath = process.env.WORKSPACE_FOLDER_PATHS || process.cwd();
   let socket: net.Socket | undefined;
   let inbound = Buffer.alloc(0);
   /** 单一飞行中的连接 Promise，避免链式 `then` 无限增长与断线后状态错乱。 */
@@ -74,12 +85,24 @@ async function main(): Promise<void> {
       p.reject(err);
     }
     pending.clear();
+    for (const lookup of pendingLookups.values()) {
+      lookup.reject(err);
+    }
+    pendingLookups.clear();
   };
 
   const onFrame = (msg: IpcMessage): void => {
     if (msg.type === 'pong') {
       /* 心跳回复：更新最后收到时间 */
       lastPongAt = Date.now();
+      return;
+    }
+    if (msg.type === 'findLatestSessionResponse') {
+      const lookup = pendingLookups.get(msg.payload.requestId);
+      if (lookup) {
+        pendingLookups.delete(msg.payload.requestId);
+        lookup.resolve(msg.payload.sessionId);
+      }
       return;
     }
     if (msg.type !== 'waitResult') {
@@ -124,7 +147,6 @@ async function main(): Promise<void> {
   let ensureTcpConnected: () => Promise<void>;
 
   const triggerReconnectAndResend = () => {
-    if (pending.size === 0) return;
     ensureTcpConnected().then(() => {
       for (const p of pending.values()) {
         sendMsg({ type: 'waitRequest', payload: p.payload });
@@ -205,7 +227,13 @@ async function main(): Promise<void> {
           if (port) {
             const s = net.connect({ host: '127.0.0.1', port }, () => {
               attachSocket(s);
-              sendMsg({ type: 'bridgeHello', payload: { pid: process.pid } });
+              sendMsg({
+                type: 'bridgeHello',
+                payload: {
+                  pid: process.pid,
+                  cwd: workspacePath,
+                },
+              });
               connecting = undefined;
               resolve();
             });
@@ -224,6 +252,58 @@ async function main(): Promise<void> {
   };
 
   void ensureTcpConnected().catch(() => {});
+
+  /**
+   * 向 Extension 询问某 workspace 最近活跃 sessionId
+   *
+   * @param wp 工作区路径
+   * @param maxAgeMs 缺省后由 Extension 决定
+   * @returns sessionId 或 undefined（连不上扩展 / 无可恢复条目 / 超时）
+   * @remarks 5s 总预算覆盖「连接 + 响应」两段，扩展未启动时也能尽快返回 undefined，让 AI 兜底传 NEW
+   */
+  const lookupLatestSession = (
+    wp: string,
+    maxAgeMs?: number,
+  ): Promise<string | undefined> => {
+    const requestId = randomUUID();
+    const payload: FindLatestSessionRequestPayload = {
+      requestId,
+      workspacePath: wp,
+      maxAgeMs,
+    };
+    return new Promise<string | undefined>((resolve) => {
+      let settled = false;
+      const finish = (sid: string | undefined): void => {
+        if (settled) return;
+        settled = true;
+        pendingLookups.delete(requestId);
+        resolve(sid);
+      };
+      const timer = setTimeout(() => finish(undefined), 5000);
+      pendingLookups.set(requestId, {
+        resolve: (sid) => {
+          clearTimeout(timer);
+          finish(sid);
+        },
+        reject: () => {
+          clearTimeout(timer);
+          finish(undefined);
+        },
+      });
+      void ensureTcpConnected()
+        .then(() => {
+          const ok = sendMsg({ type: 'findLatestSessionRequest', payload });
+          if (!ok) {
+            clearTimeout(timer);
+            finish(undefined);
+          }
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          finish(undefined);
+        });
+    });
+  };
 
   const server = new Server({ name: 'pchat', version: '1.0.2' }, { capabilities: { tools: {} } });
 
@@ -248,10 +328,41 @@ async function main(): Promise<void> {
           required: ['message', 'sessionId'],
         },
       },
+      {
+        name: 'find_latest_session_for_workspace',
+        description:
+          'Look up the most recent active sessionId for the current workspace, useful for recovering session context after Cursor conversation summarization.\n\nUSAGE: Call this tool BEFORE the very first wait_for_user_input call in any chat window. If it returns a sessionId, pass that as the sessionId argument to wait_for_user_input. If it returns null, pass "NEW".\n\nThe workspace path defaults to the bridge process working directory; you typically do not need to pass it.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            workspacePath: {
+              type: 'string',
+              description: 'Optional. Override the workspace path. Defaults to the bridge process WORKSPACE_FOLDER_PATHS or cwd.',
+            },
+            maxAgeMs: {
+              type: 'number',
+              description: 'Optional. Maximum age in milliseconds for the cached sessionId to be considered valid. Defaults to 24 hours.',
+            },
+          },
+        },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name === 'find_latest_session_for_workspace') {
+      const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+      const wp = args.workspacePath != null ? String(args.workspacePath) : workspacePath;
+      const maxAgeMs = typeof args.maxAgeMs === 'number' ? args.maxAgeMs : undefined;
+      const sessionId = await lookupLatestSession(wp, maxAgeMs);
+      const text = sessionId
+        ? `Found session: ${sessionId}\nWorkspace: ${wp}\n\nPass this exact ID as sessionId in your first wait_for_user_input call.`
+        : `No active session found for this workspace within the lookback window.\nWorkspace: ${wp}\n\nPass "NEW" as sessionId in your first wait_for_user_input call.`;
+      return {
+        content: [{ type: 'text' as const, text }],
+        structuredContent: { sessionId, workspacePath: wp },
+      };
+    }
     if (request.params.name !== 'wait_for_user_input') {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
@@ -259,7 +370,7 @@ async function main(): Promise<void> {
     const message = String(args.message ?? '');
     const titleRaw = args.title != null ? String(args.title) : undefined;
     const promptRaw = args.prompt != null ? String(args.prompt) : undefined;
-    
+
     const requestId = randomUUID();
     const parsed = parseWaitSessionId(args.sessionId, message);
     if (!parsed.ok) {
@@ -276,6 +387,7 @@ async function main(): Promise<void> {
       prompt: promptRaw,
       sessionId,
       title: titleRaw,
+      workspacePath,
     };
 
     await ensureTcpConnected();
@@ -323,6 +435,11 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  
+  // Make sure bridge process dies if Cursor closes connection without killing us
+  transport.onclose = () => {
+    process.exit(0);
+  };
 }
 
 main().catch((e) => {

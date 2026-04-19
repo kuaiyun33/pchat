@@ -12,6 +12,8 @@ export type WaitRequestPayload = {
   readonly prompt?: string;
   readonly sessionId?: string;
   readonly title?: string;
+  /** 当前 Bridge 进程所在工作区路径，用于 workspace → sessionId 注册 */
+  readonly workspacePath?: string;
 };
 
 /** Extension → Bridge：结束等待。 */
@@ -22,12 +24,31 @@ export type WaitResultPayload = {
 
 export type BridgeHelloPayload = {
   readonly pid: number;
+  /** Bridge 进程当前 Cursor 工作区路径，多根用逗号分隔 */
+  readonly cwd?: string;
+};
+
+/** Bridge → Extension：查询某工作区最近活跃 sessionId */
+export type FindLatestSessionRequestPayload = {
+  readonly requestId: string;
+  readonly workspacePath: string;
+  /** 最大有效期（毫秒），缺省 24 小时 */
+  readonly maxAgeMs?: number;
+};
+
+/** Extension → Bridge：返回 sessionId 或 undefined */
+export type FindLatestSessionResponsePayload = {
+  readonly requestId: string;
+  readonly sessionId?: string;
+  readonly lastActiveTs?: number;
 };
 
 export type IpcMessage =
   | { readonly type: 'bridgeHello'; readonly payload: BridgeHelloPayload }
   | { readonly type: 'waitRequest'; readonly payload: WaitRequestPayload }
   | { readonly type: 'waitResult'; readonly payload: WaitResultPayload }
+  | { readonly type: 'findLatestSessionRequest'; readonly payload: FindLatestSessionRequestPayload }
+  | { readonly type: 'findLatestSessionResponse'; readonly payload: FindLatestSessionResponsePayload }
   | { readonly type: 'ping' }
   | { readonly type: 'pong' };
 

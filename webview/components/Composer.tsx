@@ -58,6 +58,8 @@ type ComposerProps = {
   applyCustomCmd: (text: string) => void;
   sessionPayloadEnabled?: boolean;
   onOpenSessionPayload?: () => void;
+  /** 是否显示广告跑马灯 */
+  showAd?: boolean;
   /* 转发的 refs */
   taRef: Ref<HTMLTextAreaElement>;
   imgInputRef: Ref<HTMLInputElement>;
@@ -98,6 +100,7 @@ export function Composer({
   applyCustomCmd,
   sessionPayloadEnabled,
   onOpenSessionPayload,
+  showAd,
   taRef,
   imgInputRef,
 }: ComposerProps) {
@@ -360,6 +363,25 @@ export function Composer({
           )}
         </button>
       </div>
+
+      {/* ─── 广告跑马灯 ─── */}
+      {showAd !== false && (
+        <div class="pchat-marquee-wrap">
+          <a
+            class="pchat-marquee-link"
+            href="https://www.sukeyun.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="买全球服务器找速科云 - 点击了解更多"
+          >
+            <div class="pchat-marquee-inner">
+              <span class="pchat-marquee-text">
+                🌐 买全球服务器找速科云 &nbsp;·&nbsp; 高性能云服务器全球部署 &nbsp;·&nbsp; www.sukeyun.com &nbsp;·&nbsp; 🌐 买全球服务器找速科云 &nbsp;·&nbsp; 高性能云服务器全球部署 &nbsp;·&nbsp; www.sukeyun.com
+              </span>
+            </div>
+          </a>
+        </div>
+      )}
     </div>
   );
 }

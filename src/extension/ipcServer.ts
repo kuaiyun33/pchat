@@ -10,33 +10,51 @@ import {
   tryDecodeIpcMessage,
   type IpcMessage,
   type WaitResultPayload,
+  type FindLatestSessionRequestPayload,
+  type FindLatestSessionResponsePayload,
 } from '../shared/ipcProtocol.js';
 import { getCursorPchatBridgePortPath } from '../shared/cursorBridgePortFile.js';
 
 /** 收到来自 Bridge 的 `waitRequest` 时回调。 */
 export type OnWaitRequest = (msg: Extract<IpcMessage, { type: 'waitRequest' }>) => void;
 
+/** 收到来自 Bridge 的 `findLatestSessionRequest` 时回调，需返回应答 */
+export type OnFindLatestSession = (
+  payload: FindLatestSessionRequestPayload,
+) => FindLatestSessionResponsePayload;
+
+/** Bridge 客户端连接，附带其自报告的 workspace 路径 */
+type BridgeClient = {
+  socket: net.Socket;
+  inbound: Buffer;
+  workspacePath?: string;
+};
+
 /**
  * 管理扩展根目录下的端口文件，并向 Bridge 写入 `waitResult`。
  */
 export class PchatIpcServer {
   private server: net.Server | undefined;
-  private clients = new Set<{ socket: net.Socket; inbound: Buffer }>();
+  private clients = new Set<BridgeClient>();
   private readonly onWaitRequest: OnWaitRequest;
   private readonly onConnectionChange?: (connected: boolean) => void;
+  private readonly onFindLatestSession?: OnFindLatestSession;
 
   /**
    * @param extensionRoot - `context.extensionPath`
    * @param onWaitRequest - 将 MCP 等待分发给业务协调器
    * @param onConnectionChange - Bridge TCP 连接/断开
+   * @param onFindLatestSession - 处理 workspace 最近 session 查询
    */
   constructor(
     private readonly extensionRoot: string,
     onWaitRequest: OnWaitRequest,
     onConnectionChange?: (connected: boolean) => void,
+    onFindLatestSession?: OnFindLatestSession,
   ) {
     this.onWaitRequest = onWaitRequest;
     this.onConnectionChange = onConnectionChange;
+    this.onFindLatestSession = onFindLatestSession;
   }
 
   /**
@@ -128,7 +146,7 @@ export class PchatIpcServer {
   }
 
   private attachSocket(sock: net.Socket): void {
-    const client = { socket: sock, inbound: Buffer.alloc(0) };
+    const client: BridgeClient = { socket: sock, inbound: Buffer.alloc(0) };
     this.clients.add(client);
     this.onConnectionChange?.(this.clients.size > 0);
 
@@ -143,7 +161,7 @@ export class PchatIpcServer {
     });
   }
 
-  private onData(client: { socket: net.Socket; inbound: Buffer }, chunk: Buffer): void {
+  private onData(client: BridgeClient, chunk: Buffer): void {
     client.inbound = Buffer.concat([client.inbound, chunk]);
     for (;;) {
       let decoded;
@@ -162,19 +180,55 @@ export class PchatIpcServer {
     }
   }
 
-  private dispatch(msg: IpcMessage, client: { socket: net.Socket; inbound: Buffer }): void {
+  private dispatch(msg: IpcMessage, client: BridgeClient): void {
     if (msg.type === 'bridgeHello') {
+      if (msg.payload.cwd) {
+        client.workspacePath = msg.payload.cwd;
+      }
       return;
     }
     if (msg.type === 'ping') {
       /* 心跳：立即向来源 Bridge 回复 pong */
       if (!client.socket.destroyed) {
-        client.socket.write(encodeIpcMessage({ type: 'pong' }));
+        try {
+          client.socket.write(encodeIpcMessage({ type: 'pong' }));
+        } catch {
+          /* 写入瞬间 socket 已被对端关闭，忽略 */
+        }
       }
       return;
     }
     if (msg.type === 'waitRequest') {
-      this.onWaitRequest(msg);
+      const augmented = msg.payload.workspacePath
+        ? msg
+        : ({
+            type: 'waitRequest' as const,
+            payload: {
+              ...msg.payload,
+              workspacePath: client.workspacePath,
+            },
+          });
+      this.onWaitRequest(augmented);
+      return;
+    }
+    if (msg.type === 'findLatestSessionRequest') {
+      if (!this.onFindLatestSession) return;
+      let reply: FindLatestSessionResponsePayload;
+      try {
+        reply = this.onFindLatestSession(msg.payload);
+      } catch {
+        /* 业务回调抛错时也要回个空应答，否则 Bridge 会等到 5s 超时 */
+        reply = { requestId: msg.payload.requestId };
+      }
+      if (!client.socket.destroyed) {
+        try {
+          client.socket.write(
+            encodeIpcMessage({ type: 'findLatestSessionResponse', payload: reply }),
+          );
+        } catch {
+          /* 同 ping：写入瞬间 socket 关闭则放弃 */
+        }
+      }
       return;
     }
     if (msg.type === 'waitResult') {

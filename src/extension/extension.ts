@@ -25,6 +25,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     (c) => {
       holder.coordinator?.setBridgeConnected(c);
     },
+    (req) => {
+      const entry = holder.coordinator?.findLatestSessionForWorkspace(
+        req.workspacePath,
+        req.maxAgeMs,
+      );
+      return {
+        requestId: req.requestId,
+        sessionId: entry?.sessionId,
+        lastActiveTs: entry?.lastActiveTs,
+      };
+    },
   );
 
   const coordinator = new PchatCoordinator(
@@ -142,6 +153,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await provider.addRefFromUri(sideView?.webview, u);
     }),
   );
+
+  // Sync active file to a temp file for desktop app integration
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const activeFileMarker = path.join(os.homedir(), '.cursor', 'pchat_active_file.txt');
+  
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor?.document?.uri?.fsPath) {
+        try {
+          fs.writeFileSync(activeFileMarker, editor.document.uri.fsPath);
+        } catch (err) {
+          console.error('[pchat] write activeFileMarker failed', err);
+        }
+      }
+    })
+  );
+  
+  // Write initially if already open
+  if (vscode.window.activeTextEditor?.document?.uri?.fsPath) {
+    try {
+      fs.writeFileSync(activeFileMarker, vscode.window.activeTextEditor.document.uri.fsPath);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 /**

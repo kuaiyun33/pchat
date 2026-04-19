@@ -24,10 +24,10 @@ function generateUniqueId(): string {
   let attempts = 0;
   do {
     const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mi = String(now.getMinutes()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
     const rand = randomBytes(4).toString('hex');
-    generated = `${hh}${mi}-${rand}`;
+    generated = `${mm}${ss}-${rand}`;
     attempts++;
   } while (issuedIds.has(generated) && attempts < 100);
   issuedIds.set(generated, Date.now());
@@ -37,7 +37,7 @@ function generateUniqueId(): string {
 /**
  * 解析 AI 传入的 sessionId。
  *
- * - "NEW" / 空 → 生成 `HHmm-xxxxxxxx`（时分 + 8 位随机 hex），
+ * - "NEW" / 空 → 生成 `mmss-xxxxxxxx`（分秒 + 8 位随机 hex），
  *   通过 issuedIds Map 保证同进程内 100% 不重复，并定期清理 24h 前的旧条目。
  * - AI 自行传入的 ID → 检查是否与已发放 ID 碰撞，若碰撞则重新分配。
  */
