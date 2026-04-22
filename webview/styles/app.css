@@ -99,7 +99,7 @@ body {
   line-height: 14px;
   text-align: center;
   border-radius: 7px;
-  background: var(--pchat-accent);
+  background: var(--pchat-success);
   color: #1a1b26;
   font-size: 8px;
   font-weight: 700;
@@ -1097,7 +1097,7 @@ body {
   line-height: 16px;
   text-align: center;
   border-radius: 8px;
-  background: var(--pchat-accent);
+  background: var(--pchat-success);
   color: #1a1b26;
   font-size: 9px;
   font-weight: 700;
