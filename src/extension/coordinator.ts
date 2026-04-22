@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { Buffer } from "node:buffer";
 function logDebug(...args: any[]) {
   fs.appendFileSync(
     "/tmp/pchat.log",
@@ -239,7 +240,8 @@ export class PchatCoordinator {
     this.sessions = this.sessions.filter((s) => {
       if (s.id === this.activeSessionId) return true;
       if (s.messages.length > 0) return true;
-      if (this.queues.has(s.id) && this.queues.get(s.id)!.length > 0) return true;
+      if (this.queues.has(s.id) && this.queues.get(s.id)!.length > 0)
+        return true;
       return false;
     });
     if (this.sessions.length < before) {
@@ -589,9 +591,7 @@ export class PchatCoordinator {
 
   private defaultTitleForSessionKey(sessionKey: string): string {
     // 新格式 "1941-a716b2c3" → "19:41"
-    const newMatch = sessionKey.match(
-      /^(\d{2})(\d{2})-[0-9a-f]{4,8}$/i,
-    );
+    const newMatch = sessionKey.match(/^(\d{2})(\d{2})-[0-9a-f]{4,8}$/i);
     if (newMatch) {
       return `${newMatch[1]}:${newMatch[2]}`;
     }
@@ -796,7 +796,10 @@ export class PchatCoordinator {
     const wp = workspacePath.trim();
     const sid = sessionId.trim();
     if (!wp || !sid) return;
-    this.workspaceSessions.set(wp, { sessionId: sid, lastActiveTs: Date.now() });
+    this.workspaceSessions.set(wp, {
+      sessionId: sid,
+      lastActiveTs: Date.now(),
+    });
     if (this.workspaceSessions.size > WORKSPACE_SESSION_MAX_ENTRIES) {
       const sorted = [...this.workspaceSessions.entries()].sort(
         (a, b) => a[1].lastActiveTs - b[1].lastActiveTs,
@@ -837,9 +840,9 @@ export class PchatCoordinator {
   }
 
   private loadWorkspaceSessions(): void {
-    const raw = this.context.globalState.get<Record<string, WorkspaceSessionEntry>>(
-      WORKSPACE_SESSIONS_KEY,
-    );
+    const raw = this.context.globalState.get<
+      Record<string, WorkspaceSessionEntry>
+    >(WORKSPACE_SESSIONS_KEY);
     if (!raw) return;
     for (const [wp, entry] of Object.entries(raw)) {
       if (entry?.sessionId && typeof entry.lastActiveTs === "number") {
