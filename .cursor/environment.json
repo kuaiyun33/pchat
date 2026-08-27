@@ -1,0 +1,4 @@
+{
+  "name": "PChat VS Code Extension",
+  "install": "npm ci && npm run build"
+}
